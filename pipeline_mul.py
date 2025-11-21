@@ -6,7 +6,7 @@ Rule 프리필터 + YAMNet 임베딩 + MLP 통합 추론 (온라인 YAMNet)
 
 import functools
 print = functools.partial(print, flush=True)
-
+from sklearn.metrics import confusion_matrix, precision_recall_fscore_support, accuracy_score
 import os
 import glob
 import unicodedata
@@ -33,7 +33,7 @@ OUT_CSV_PATH = "./result/pipe/rule_yamnet_mlp_from_emb.csv"  #결과 엑셀 파�
 TARGET_SR = 16000
 
 RULE_MIN_SCORE = 0.15           # rule 프리필터 기준
-POSITIVE_PREFIX = {"S2"}        # 양성 클래스 prefix
+POSITIVE_PREFIX = {"S1", "S2", "S3", "S8", "S10"}       # 양성 클래스 prefix
 YAMNET_MODEL_HANDLE = os.path.expanduser("~/yamnet_local") #다운 방법 read.me에 적어둠
 
 # 폰트 설정 (한글 깨짐 방지)
@@ -208,6 +208,14 @@ def plot_confusion_matrix(cm, labels, out_path, title="Confusion Matrix"):
     plt.savefig(out_path, dpi=200)
     plt.close()
 
+def print_binary_metrics(y_true, y_pred, name=""):
+    acc = accuracy_score(y_true, y_pred)
+    prec, rec, f1, _ = precision_recall_fscore_support(
+        y_true, y_pred,
+        average="binary",
+        pos_label=1
+    )
+    print(f"[{name}] acc={acc:.4f}  prec={prec:.4f}  rec={rec:.4f}  f1={f1:.4f}")
 
 # ================================
 #  5) Post-processor (오프라인 지표용)
@@ -337,7 +345,6 @@ def main():
     # 🔥 stage_final 계산 추가
     # -------------------------
     def compute_stage_final(row):
-
         # 1) Rule 단계에서 컷
         if row["stage"] == "rule_filtered":
             return "rule_filtered"
@@ -347,17 +354,17 @@ def main():
             return "mlp_failed"
 
         # 3) passed → MLP 결과 분석
-        true_is_S2 = row["true_label"].split("-")[0] == "S2"
-        pred_is_S2 = (row["pred_prefix"] == "S2")
+        true_is_pos = row["true_label"].split("-")[0] in POSITIVE_PREFIX
+        pred_is_pos = (row["pred_prefix"] in POSITIVE_PREFIX)
 
-        if true_is_S2 and pred_is_S2:
-            return "mlp_tp"   # S2→S2  (맞게 예측)
-        if true_is_S2 and not pred_is_S2:
-            return "mlp_fn"   # S2→다른클래스  (놓침)
-        if not true_is_S2 and pred_is_S2:
-            return "mlp_fp"   # 다른클래스→S2  (잘못 울림)
-        if not true_is_S2 and not pred_is_S2:
-            return "mlp_tn"   # 정상→정상  (정상)
+        if true_is_pos and pred_is_pos:
+            return "mlp_tp"   # 양성 → 양성
+        if true_is_pos and not pred_is_pos:
+            return "mlp_fn"   # 양성 → 음성
+        if not true_is_pos and pred_is_pos:
+            return "mlp_fp"   # 음성 → 양성
+        if not true_is_pos and not pred_is_pos:
+            return "mlp_tn"   # 음성 → 음성
 
     
     df["stage_final"] = df.apply(compute_stage_final, axis=1)
@@ -449,6 +456,7 @@ def main():
         "./result/pipe/emb_cm_binary.png",
         title="Binary CM (MLP stage only)"
     )
+    print_binary_metrics(true_bin, pred_bin, "MLP-only (segment)")
 
     # 🔵 파이프라인 전체 기준 이진 평가
     cm_bin_all = confusion_matrix(df["true_bin_all"], df["pred_bin_all"], labels=[0, 1])
@@ -459,6 +467,7 @@ def main():
         title="Binary CM (Full pipeline)"
     )
     print("파이프라인 전체 기준 이진 CM 저장 완료: emb_cm_binary_pipeline.png")
+    print_binary_metrics(df["true_bin_all"], df["pred_bin_all"], "Full pipeline")
 
     # 🔵 파이프라인 + 스트리밍 post-processor 기준 이진 평가
     if "post_pred_bin_stream" in df.columns:
@@ -474,6 +483,7 @@ def main():
             title="Binary CM (Pipeline + streaming post)"
         )
         print("파이프라인 + postprocessor 기준 이진 CM 저장 완료: emb_cm_binary_pipeline_post.png")
+        print_binary_metrics(df["true_bin_all"], df["post_pred_bin_stream"], "Pipeline + streaming post")
 
     # post-processor (오프라인 성능용, group 기준)
     df_post = apply_postprocessor(df_valid)
